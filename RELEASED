@@ -1,0 +1,376 @@
+-- Configuration
+local player = game.Players.LocalPlayer  -- Assumes this script is run by the player
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local mouse = player:GetMouse()
+local screenGui = Instance.new("ScreenGui")
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 300, 0, 50)
+frame.Position = UDim2.new(0.5, -150, 0, -60)
+frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+frame.BackgroundTransparency = 0.5
+frame.Parent = screenGui
+
+local distanceLabel = Instance.new("TextLabel")
+distanceLabel.Size = UDim2.new(1, 0, 0.5, 0)
+distanceLabel.Position = UDim2.new(0, 0, 0, 0)
+distanceLabel.Text = "Distance: 5 studs"
+distanceLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+distanceLabel.TextScaled = true
+distanceLabel.Parent = frame
+
+-- Player and game variables
+local playerTeam = player.Team
+local greenBoxes = {}  -- Store references to all green boxes
+local speed = 17  -- Movement speed of the defender
+local followDistance = 5  -- Distance to keep from the front of the target player
+local minDistance = 0  -- Minimum distance
+local maxDistance = 20  -- Maximum distance
+
+local lastClickTime = 0
+local doubleClickInterval = 0.2  -- 0.2 seconds interval for double-click detection
+local chasingBasketball = false
+local predictionTime = 0.2  -- Time in seconds to predict where the ball will go
+local yellowBox = nil  -- Variable to store the yellow/blue box
+local predictionTime = 0.15  -- Time in seconds to predict where the ball will go
+local maxHorizontalDistance = 3.5  -- Maximum horizontal distance for jump reach
+
+-- Guarding and basketball logic
+local isGuarding = false
+local targetPlayer = nil
+local floorClickPosition = nil
+
+-- Functions to predict basketball movement and calculate distances
+local function predictBasketballPosition()
+    local ball = workspace:FindFirstChild("Basketball")
+    if ball then
+        local ballPos = ball.Position
+        local ballVelocity = ball.Velocity
+        return ballPos + ballVelocity * predictionTime
+    end
+    return nil
+end
+
+local function getDistance(pos1, pos2)
+    return (pos1 - pos2).Magnitude
+end
+
+-- Guarding and following player functions
+local function getNearestPlayer()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    for _, otherPlayer in pairs(game.Players:GetPlayers()) do
+        if otherPlayer ~= player and otherPlayer.Character then
+            local otherCharacter = otherPlayer.Character
+            local otherHumanoidRootPart = otherCharacter:WaitForChild("HumanoidRootPart")
+            local distance = (character.HumanoidRootPart.Position - otherHumanoidRootPart.Position).Magnitude
+            if distance < shortestDistance then
+                closestPlayer = otherPlayer
+                shortestDistance = distance
+            end
+        end
+    end
+    return closestPlayer
+end
+
+local function isHoldingBasketball(targetPlayer)
+    if targetPlayer and targetPlayer.Character then
+        local basketball = game.Workspace:FindFirstChild(targetPlayer.Name):FindFirstChild("Basketball")
+        if basketball then
+            return true
+        end
+    end
+    return false
+end
+
+local shoulderOffsetValue = 0
+local shoulderOffsetDirection = 1
+
+local function switchShoulderOffset()
+    while true do
+        shoulderOffsetValue = math.random(0, 25) / 10 -- Random offset between 0 and 2.5
+        shoulderOffsetDirection = shoulderOffsetDirection * -1 -- Switch sides
+        wait(math.random(0.1, 1.2)) -- Random wait time between 0.1 and 1.2 seconds
+    end
+end
+
+spawn(switchShoulderOffset)
+
+local function alignWithRim()
+    if targetPlayer and floorClickPosition then
+        local targetPos = targetPlayer.Character.HumanoidRootPart.Position
+        local rimPos = floorClickPosition
+        local directionToRim = (rimPos - targetPos).Unit
+        local desiredPosition = targetPos + directionToRim * followDistance
+        local targetDirection = (targetPos - character.HumanoidRootPart.Position).Unit
+        
+        -- Apply shoulder offset with switching logic
+        local shoulderOffset = Vector3.new(targetDirection.Z, 0, -targetDirection.X) * shoulderOffsetValue * shoulderOffsetDirection
+        local adjustedPosition = desiredPosition + shoulderOffset
+        
+        humanoid:MoveTo(adjustedPosition)
+    end
+end
+
+
+local function alignWithPredictedBall()
+    local predictedPosition = predictBasketballPosition()
+    if predictedPosition then
+        local targetPos = character.HumanoidRootPart.Position
+        local directionToBall = (predictedPosition - targetPos).Unit
+        local desiredPosition = targetPos + directionToBall * followDistance
+        humanoid:MoveTo(desiredPosition)
+
+        -- Calculate the difference in height and horizontal distance
+        local heightDifference = predictedPosition.Y - targetPos.Y
+        local horizontalDistance = (predictedPosition - targetPos).Magnitude
+
+        -- Check if the ball is directly above the player and reachable for a jump
+        if horizontalDistance <= maxHorizontalDistance and heightDifference > 2 and heightDifference <= 7.6 then
+            -- Ball is above and within jump reach, change the box color to blue
+            if yellowBox then
+                yellowBox.BrickColor = BrickColor.new("Bright blue")
+            end
+        else
+            -- Keep the box yellow if no jump is required
+            if yellowBox then
+                yellowBox.BrickColor = BrickColor.new("Bright yellow")
+            end
+        end
+    end
+end
+
+local function alignWithBallCarrier()
+    local ballHolder = nil
+    for _, otherPlayer in pairs(game.Players:GetPlayers()) do
+        if otherPlayer ~= player and otherPlayer.Character then
+            if isHoldingBasketball(otherPlayer) then
+                ballHolder = otherPlayer
+                break
+            end
+        end
+    end
+
+    local targetPos = targetPlayer.Character.HumanoidRootPart.Position
+    local ballPos = nil
+
+    -- Determine ball position (held by player or loose on court)
+    if ballHolder then
+        ballPos = ballHolder.Character.HumanoidRootPart.Position
+    elseif workspace:FindFirstChild("Basketball") then
+        ballPos = workspace.Basketball.Position
+    end
+
+    if ballPos then
+        local distanceBetween = (ballPos - targetPos).Magnitude
+
+        -- If distance between ball and guarded player is <= 18.6, position in the middle
+        if distanceBetween <= 18.6 then
+            local midpoint = (targetPos + ballPos) / 2
+            humanoid:MoveTo(midpoint)
+        else
+            -- Default behavior if distance is more than 18.6
+            local directionToBall = (ballPos - targetPos).Unit
+            local desiredPosition = targetPos + directionToBall * followDistance
+            local targetDirection = (targetPos - character.HumanoidRootPart.Position).Unit
+            local shoulderOffset = Vector3.new(targetDirection.Z, 0, -targetDirection.X)
+            local adjustedPosition = desiredPosition + shoulderOffset * 0
+            humanoid:MoveTo(adjustedPosition)
+        end
+    end
+end
+
+-- Toggle the yellow/blue box on the player's head with Q key
+game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if input.KeyCode == Enum.KeyCode.Q then
+        if yellowBox then
+            -- Remove the box
+            yellowBox:Destroy()
+            yellowBox = nil
+        else
+            -- Create the yellow box above the player's head
+            yellowBox = Instance.new("Part")
+            yellowBox.Size = Vector3.new(0.5, 0.5, 0.5)  -- 0.5x0.5x0.5 box
+            yellowBox.Color = Color3.fromRGB(255, 255, 0)  -- Yellow color
+            yellowBox.Material = Enum.Material.Neon  -- Glowing effect
+            yellowBox.Anchored = true
+            yellowBox.CanCollide = false
+            yellowBox.Parent = game.Workspace
+
+            -- Position the box above the player's head
+            yellowBox.CFrame = rootPart.CFrame * CFrame.new(0, 3, 0)
+
+            -- Continuously update the position of the yellow box
+            local connection
+            connection = game:GetService("RunService").Heartbeat:Connect(function()
+                if not yellowBox or not character or not character.Parent then
+                    connection:Disconnect()
+                else
+                    yellowBox.CFrame = rootPart.CFrame * CFrame.new(0, 3, 0)
+                end
+            end)
+        end
+    end
+end)
+
+-- Event listener for mouse clicks (green box setup)
+mouse.Button1Down:Connect(function()
+    local currentTime = tick()
+    if currentTime - lastClickTime <= doubleClickInterval then
+        -- Double-click detected, create the green box
+        local target = mouse.Target
+        if target and target:IsDescendantOf(game.Workspace) then
+            floorClickPosition = target.Position
+
+            -- Create a green box
+            local greenBox = Instance.new("Part")
+            greenBox.Size = Vector3.new(2, 1, 2)
+            greenBox.Position = floorClickPosition + Vector3.new(0, 2, 0)
+            greenBox.Anchored = true
+            greenBox.CanCollide = false
+            greenBox.BrickColor = BrickColor.new("Lime green")
+            greenBox.Parent = game.Workspace
+
+            -- Add the green box to the list
+            table.insert(greenBoxes, greenBox)
+        end
+    end
+    lastClickTime = currentTime  -- Update the time of the last click
+end)
+
+-- Event listener for mouse right-click (removal of green boxes)
+mouse.Button2Down:Connect(function()
+    local currentTime = tick()
+    if currentTime - lastClickTime <= doubleClickInterval then
+        -- Double-right-click detected, remove all green boxes
+        for _, box in pairs(greenBoxes) do
+            if box and box.Parent then
+                box:Destroy()
+            end
+        end
+        greenBoxes = {}  -- Clear the list of green boxes
+    end
+    lastClickTime = currentTime  -- Update the time of the last click
+end)
+
+-- Track if extra distance is toggled
+local extraDistanceToggled = false
+local extraDistance = 3.1
+
+-- Toggle distance label visibility with M key
+local distanceLabelVisible = true  -- Tracks visibility state
+
+-- KeyPress events to toggle guarding behavior
+game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    -- Toggle Distance Label with M key
+    if input.KeyCode == Enum.KeyCode.M then
+        distanceLabelVisible = not distanceLabelVisible
+        frame.Visible = distanceLabelVisible
+    end
+    
+    -- Guard nearest player with ] key
+    if input.KeyCode == Enum.KeyCode.RightBracket then
+        if not isGuarding then
+            -- Start guarding the nearest player
+            targetPlayer = getNearestPlayer()
+            if targetPlayer then
+                isGuarding = true
+                while isGuarding do
+                    alignWithRim()
+                    wait(0.1)
+                end
+            end
+        else
+            -- Stop guarding
+            isGuarding = false
+        end
+
+    -- Guard player in line with ball using ' key
+    elseif input.KeyCode == Enum.KeyCode.Quote then
+        local ballHolder = nil
+        for _, otherPlayer in pairs(game.Players:GetPlayers()) do
+            if otherPlayer ~= player and otherPlayer.Character then
+                if isHoldingBasketball(otherPlayer) then
+                    ballHolder = otherPlayer
+                    break
+                end
+            end
+        end
+
+        if ballHolder then
+            targetPlayer = getNearestPlayer()
+            if targetPlayer then
+                isGuarding = true
+                while isGuarding do
+                    alignWithBallCarrier()
+                    wait(0.1)
+                end
+            end
+        end
+    end
+    
+    -- Adjust guarding distance with K and L keys
+    if input.KeyCode == Enum.KeyCode.K then
+        followDistance = math.max(minDistance, followDistance - 0.2)
+        distanceLabel.Text = "Distance: " .. string.format("%.1f", followDistance) .. " studs"
+    elseif input.KeyCode == Enum.KeyCode.L then
+        followDistance = math.min(maxDistance, followDistance + 0.2)
+        distanceLabel.Text = "Distance: " .. string.format("%.1f", followDistance) .. " studs"
+    elseif input.KeyCode == Enum.KeyCode.LeftControl then
+        if extraDistanceToggled then
+            followDistance = followDistance - extraDistance
+            extraDistanceToggled = false
+        else
+            followDistance = followDistance + extraDistance
+            extraDistanceToggled = true
+        end
+        distanceLabel.Text = "Distance: " .. string.format("%.1f", followDistance) .. " studs"
+    end
+end)
+
+
+-- Start/Stop chasing the basketball with Q key
+game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if input.KeyCode == Enum.KeyCode.Q then
+        if chasingBasketball then
+            chasingBasketball = false
+        else
+            chasingBasketball = true
+            while chasingBasketball do
+                alignWithPredictedBall()  -- Continuously chase the ball
+                wait(0.1)
+            end
+        end
+    end
+end)
+
+-- Manually press Spacebar to jump
+game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if input.KeyCode == Enum.KeyCode.Space then
+        humanoid.Jump = true  -- Manually make the character jump
+    end
+end)
+
+-- Update the guarding and chasing position
+game:GetService("RunService").Heartbeat:Connect(function()
+    if isGuarding then
+        if isHoldingBasketball(targetPlayer) then
+            alignWithRim()
+        else
+            alignWithBallCarrier()
+        end
+    elseif chasingBasketball then
+        alignWithPredictedBall()
+    end
+end)
